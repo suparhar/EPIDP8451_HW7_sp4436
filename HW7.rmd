@@ -40,6 +40,7 @@ mi.data <- mi.data %>%
     Arr = factor(Arr),
     Diab = factor(Diab),
     Obesity = factor(Obesity),
+    FC = factor(FC),
     Asthma = factor(Asthma),
     readmission = factor(readmission,
                          levels = c(0,1),
@@ -266,3 +267,5 @@ en.pred <- predict(en.model, newdata = test.data)
 confusionMatrix(en.pred, test.data$readmission, positive = "Yes")
 ```
 
+##
+Elastic Net achieved the highest cross-validated performance with an ROC of 0.655 and was selected as the final model.
