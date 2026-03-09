@@ -1,0 +1,268 @@
+---
+title: "EPIDP8451_HW7_sp4436"
+author: "Sukhman Parhar"
+date: "2026-03-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+library(rpart)
+library(caret)
+library(rpart.plot)
+library(pROC)
+library(dplyr)
+library(randomForest)
+```
+
+## Load and prep the data
+
+```{r}
+mi.data <- read_csv("mi.data.csv")
+
+str(mi.data)
+summary(mi.data)
+
+# Remove ID variable
+mi.data$ID <- NULL
+
+# Convert categorical variables
+mi.data <- mi.data %>%
+  mutate(
+    Sex = factor(Sex,
+                 levels = c(0,1,2),
+                 labels = c("Male","Female","NonBinaryOther")),
+    Pulm.adema = factor(Pulm.adema),
+    Arr = factor(Arr),
+    Diab = factor(Diab),
+    Obesity = factor(Obesity),
+    Asthma = factor(Asthma),
+    readmission = factor(readmission,
+                         levels = c(0,1),
+                         labels = c("No","Yes"))
+  )
+
+# Check structure
+str(mi.data)
+
+# Check missing data
+colSums(is.na(mi.data))
+
+# Check class balance
+table(mi.data$readmission)
+prop.table(table(mi.data$readmission))
+
+```
+
+## Parition Data
+
+```{r}
+set.seed(13)
+
+train.indices <- mi.data %>%
+  pull(readmission) %>%
+  createDataPartition(p = 0.7, list = FALSE)
+
+train.data <- mi.data %>%
+  slice(train.indices)
+
+test.data <- mi.data %>%
+  slice(-train.indices)
+```
+
+## Fit Elastic Net
+
+```{r}
+set.seed(13)
+
+en.control <- trainControl(
+  method = "cv",
+  number = 10,
+  sampling = "down",
+  classProbs = TRUE,
+  summaryFunction = twoClassSummary
+)
+
+en.model <- train(
+  readmission ~ .,
+  data = train.data,
+  method = "glmnet",
+  family = "binomial",
+  trControl = en.control,
+  preProc = c("center", "scale"),
+  tuneLength = 10,
+  metric = "ROC"
+)
+
+# Print alpha and lambda
+en.model$bestTune
+
+en.model$results
+
+# Model coefficients
+coef(en.model$finalModel, en.model$bestTune$lambda)
+
+# Variable importance
+varImp(en.model)
+```
+
+## Construct a single classification tree
+
+```{r}
+set.seed(13)
+
+train.control <- trainControl(
+  method = "cv",
+  number = 10,
+  sampling = "down"
+)
+
+grid.singletree <- expand.grid(
+  cp = seq(0.0005, 0.02, by = 0.001)
+)
+
+tree.mi <- train(
+  readmission ~ .,
+  data = train.data,
+  method = "rpart",
+  trControl = train.control,
+  tuneGrid = grid.singletree
+)
+
+tree.mi$bestTune
+
+tree.mi
+
+rpart.plot(tree.mi$finalModel)
+
+confusionMatrix(tree.mi)
+
+tree.mi$results
+
+whichTwoPct <- tolerance(tree.mi$results,
+                         metric = "Accuracy",
+                         tol = 2,
+                         maximize = TRUE)
+
+tree.mi$results[whichTwoPct,1:2]
+```
+
+## Bagging
+
+```{r}
+set.seed(13)
+
+mtry.val1 <- expand.grid(.mtry = ncol(train.data)-1)
+
+control.settings <- trainControl(
+  method = "cv",
+  number = 10,
+  sampling = "down"
+)
+
+bag.mi.1 <- train(
+  readmission ~ .,
+  data = train.data,
+  method = "rf",
+  metric = "Accuracy",
+  tuneGrid = mtry.val1,
+  ntree = 100,
+  trControl = control.settings
+)
+
+bag.mi.1$results
+
+varImp(bag.mi.1)
+
+plot(varImp(bag.mi.1))
+
+confusionMatrix(bag.mi.1)
+
+bag.mi.2 <- train(
+  readmission ~ .,
+  data = train.data,
+  method = "rf",
+  metric = "Accuracy",
+  tuneGrid = mtry.val1,
+  ntree = 200,
+  trControl = control.settings
+)
+
+bag.mi.2$results
+
+varImp(bag.mi.2)
+
+plot(varImp(bag.mi.2))
+
+confusionMatrix(bag.mi.2)
+```
+
+## Random Forest
+
+```{r}
+set.seed(13)
+
+# different mtry values
+mtry.vals <- c(
+  ncol(train.data) - 1,
+  sqrt(ncol(train.data) - 1),
+  0.5 * (ncol(train.data) - 1)
+)
+
+mtry.grid <- expand.grid(.mtry = round(mtry.vals))
+
+rf.mi <- train(
+  readmission ~ .,
+  data = train.data,
+  method = "rf",
+  metric = "Accuracy",
+  tuneGrid = mtry.grid,
+  trControl = control.settings,
+  ntree = 100
+)
+
+confusionMatrix(rf.mi)
+
+rf.mi$results
+
+rf.mi$bestTune
+
+rf.mi$finalModel
+
+varImp(rf.mi)
+
+plot(varImp(rf.mi))
+
+varImpPlot(rf.mi$finalModel)
+```
+
+## Model Comparison
+
+```{r}
+comparison <- tibble(
+  Model = c("Elastic Net", "Single Tree", "Bagging (100)", "Bagging (200)", "Random Forest"),
+  Metric_Used = c("ROC", "Accuracy", "Accuracy", "Accuracy", "Accuracy"),
+  Best_Value = c(
+    max(en.model$results$ROC),
+    max(tree.mi$results$Accuracy),
+    max(bag.mi.1$results$Accuracy),
+    max(bag.mi.2$results$Accuracy),
+    max(rf.mi$results$Accuracy)
+  )
+)
+
+comparison
+```
+
+## Final Model Eval 
+
+```{r}
+en.pred <- predict(en.model, newdata = test.data)
+
+confusionMatrix(en.pred, test.data$readmission, positive = "Yes")
+```
+
